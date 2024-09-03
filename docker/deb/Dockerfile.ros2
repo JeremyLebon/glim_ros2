@@ -17,14 +17,19 @@ RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/r
 RUN apt-get update
 RUN apt-get install --no-install-recommends -y \
     python3-colcon-common-extensions \
-    ros-${ROS_DISTRO}-ros-base ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-desktop ros-${ROS_DISTRO}-cv-bridge ros-${ROS_DISTRO}-ros-gz \
     ros-${ROS_DISTRO}-image-transport-plugins ros-${ROS_DISTRO}-tf2-ros \
     python3-bloom python3-rosdep fakeroot debhelper dh-python
 
-COPY local_ppa /ppa
+#COPY local_ppa /ppa
 
-RUN /ppa/setup_ppa.sh
-RUN sed -i 's#https://koide3.github.io/ppa#file:///ppa#g' /etc/apt/sources.list.d/koide3_ppa.list
+# RUN /ppa/setup_ppa.sh
+# RUN sed -i 's#https://koide3.github.io/ppa#file:///ppa#g' /etc/apt/sources.list.d/koide3_ppa.list
+
+RUN curl -s --compressed "https://koide3.github.io/ppa/ubuntu2404/KEY.gpg" | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/koide3_ppa.gpg >/dev/null
+RUN echo "deb [signed-by=/etc/apt/trusted.gpg.d/koide3_ppa.gpg] https://koide3.github.io/ppa/ubuntu2404 ./" | sudo tee /etc/apt/sources.list.d/koide3_ppa.list
+
+
 RUN apt-get update
 
 ARG PACKAGE_SUFFIX=-cuda12.5
@@ -55,12 +60,33 @@ RUN apt-get update && rosdep update
 
 COPY glim_ros2 /root/glim_ros2
 WORKDIR /root/glim_ros2
-RUN /bin/bash -c '. /opt/ros/${ROS_DISTRO}/setup.bash; bloom-generate rosdebian'
-RUN sed -i 's/dh $@/dh $@ --parallel/g' ./debian/rules
-RUN sed -i 's/dh_shlibdeps/dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info/g' ./debian/rules
-RUN sed -i "s/ros-${ROS_DISTRO}-glim-ros/ros-${ROS_DISTRO}-glim-ros${PACKAGE_SUFFIX}/g" ./debian/control
-RUN sed -i "s/ros-${ROS_DISTRO}-glim-ros/ros-${ROS_DISTRO}-glim-ros${PACKAGE_SUFFIX}/g" ./debian/changelog
-RUN sed -i "s/ros-${ROS_DISTRO}-glim-ros/ros-${ROS_DISTRO}-glim-ros${PACKAGE_SUFFIX}/g" ./debian/rules
-RUN DEB_BUILD_OPTIONS="parallel=$(nproc)" fakeroot debian/rules binary
+
+# # Problably not really needed
+# RUN /bin/bash -c '. /opt/ros/${ROS_DISTRO}/setup.bash; bloom-generate rosdebian'
+# RUN sed -i 's/dh $@/dh $@ --parallel/g' ./debian/rules
+# RUN sed -i 's/dh_shlibdeps/dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info/g' ./debian/rules
+# RUN sed -i "s/ros-${ROS_DISTRO}-glim-ros/ros-${ROS_DISTRO}-glim-ros${PACKAGE_SUFFIX}/g" ./debian/control
+# RUN sed -i "s/ros-${ROS_DISTRO}-glim-ros/ros-${ROS_DISTRO}-glim-ros${PACKAGE_SUFFIX}/g" ./debian/changelog
+# RUN sed -i "s/ros-${ROS_DISTRO}-glim-ros/ros-${ROS_DISTRO}-glim-ros${PACKAGE_SUFFIX}/g" ./debian/rules
+# RUN DEB_BUILD_OPTIONS="parallel=$(nproc)" fakeroot debian/rules binary
+
+RUN echo "#!/bin/bash" >> /ros_entrypoint.sh \
+  && echo "set -e" >> /ros_entrypoint.sh \
+  && echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /ros_entrypoint.sh \
+  && echo "source /root/ros2_ws/install/setup.bash" >> /ros_entrypoint.sh \
+  && echo 'exec "$@"' >> /ros_entrypoint.sh \
+  && chmod a+x /ros_entrypoint.sh
+
+COPY glim /root/ros2_ws/src/glim
+COPY glim_ros2 /root/ros2_ws/src/glim_ros2
+  
+WORKDIR /root/ros2_ws
+RUN /bin/bash -c '. /opt/ros/${ROS_DISTRO}/setup.bash; colcon build --parallel-workers $(nproc) --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_WITH_CUDA=OFF -DBUILD_WITH_VIEWER=ON'
+  
+WORKDIR /root/ros2_ws/src/glim
+
+RUN echo "source /ros_entrypoint.sh" >> /root/.bashrc 
+  
+ENTRYPOINT ["/ros_entrypoint.sh"]
 
 CMD ["bash"]

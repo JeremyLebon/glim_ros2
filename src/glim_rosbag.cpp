@@ -96,10 +96,37 @@ int main(int argc, char** argv) {
     spdlog::info("- {}", bag_filename);
   }
 
+  // Playback range settings
+  double delay = 0.0;
+  glim->declare_parameter<double>("delay", delay);
+  glim->get_parameter<double>("delay", delay);
+
+  double start_offset = 0.0;
+  glim->declare_parameter<double>("start_offset", start_offset);
+  glim->get_parameter<double>("start_offset", start_offset);
+
+  double playback_duration = 0.0;
+  glim->declare_parameter<double>("playback_duration", playback_duration);
+  glim->get_parameter<double>("playback_duration", playback_duration);
+
+  double playback_until = 0.0;
+  glim->declare_parameter<double>("playback_until", playback_until);
+  glim->get_parameter<double>("playback_until", playback_until);
+
+  // Playback speed settings
   const double playback_speed = config_ros.param<double>("glim_ros", "playback_speed", 100.0);
   const auto real_t0 = std::chrono::high_resolution_clock::now();
   rcutils_time_point_value_t bag_t0 = 0;
   SpeedCounter speed_counter;
+
+  double end_time = std::numeric_limits<double>::max();
+  glim->declare_parameter<double>("end_time", end_time);
+  glim->get_parameter<double>("end_time", end_time);
+
+  if (delay > 0.0) {
+    spdlog::info("delaying {} sec", delay);
+    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(delay * 1000)));
+  }
 
   // Bag read function
   const auto read_bag = [&](const std::string& bag_filename) {
@@ -145,9 +172,24 @@ int main(int argc, char** argv) {
       const rclcpp::SerializedMessage serialized_msg(*msg->serialized_data);
 
       const auto msg_time = get_msg_recv_timestamp(*msg);
-
       if (bag_t0 == 0) {
         bag_t0 = msg_time;
+      }
+      spdlog::debug("msg_time: {} ({} sec)", msg_time / 1e9, (msg_time - bag_t0) / 1e9);
+
+      if (start_offset > 0.0 && msg_time - bag_t0 < start_offset * 1e9) {
+        spdlog::debug("skipping msg for start_offset ({} < {})", (msg_time - bag_t0) / 1e9, start_offset);
+        continue;
+      }
+
+      if (playback_until > 0.0 && msg_time / 1e9 > playback_until) {
+        spdlog::info("reached playback_until ({} < {})", msg_time / 1e9, playback_until);
+        return false;
+      }
+
+      if (playback_duration > 0.0 && (msg_time - bag_t0) / 1e9 > playback_duration) {
+        spdlog::info("reached playback_duration ({} > {})", (msg_time - bag_t0) / 1e9, playback_duration);
+        return false;
       }
 
       const auto bag_elapsed = std::chrono::nanoseconds(msg_time - bag_t0);
@@ -164,6 +206,11 @@ int main(int argc, char** argv) {
         points_serialization.deserialize_message(&serialized_msg, points_msg.get());
         const size_t workload = glim->points_callback(points_msg);
 
+        if (points_msg->header.stamp.sec + points_msg->header.stamp.nanosec * 1e-9 > end_time) {
+          spdlog::info("end_time reached");
+          return false;
+        }
+
         if (workload > 5) {
           // Odometry estimation is behind
           const size_t sleep_msec = (workload - 4) * 5;
@@ -177,6 +224,10 @@ int main(int argc, char** argv) {
       } else if (msg->topic_name == image_topic && topic_type == "sensor_msgs/msg/CompressedImage") {
         auto compressed_image_msg = std::make_shared<sensor_msgs::msg::CompressedImage>();
         compressed_image_serialization.deserialize_message(&serialized_msg, compressed_image_msg.get());
+
+        auto image_msg = std::make_shared<sensor_msgs::msg::Image>();
+        cv_bridge::toCvCopy(*compressed_image_msg, "bgr8")->toImageMsg(*image_msg);
+        glim->image_callback(image_msg);
       }
 
       auto found = subscription_map.find(msg->topic_name);
@@ -203,23 +254,24 @@ int main(int argc, char** argv) {
   };
 
   // Read all rosbags
-  for (const auto& bag_filename : bag_filenames) {
-    if (!read_bag(bag_filename)) {
-      break;
-    }
-  }
-
   bool auto_quit = false;
   glim->declare_parameter<bool>("auto_quit", auto_quit);
   glim->get_parameter<bool>("auto_quit", auto_quit);
 
-  if (!auto_quit) {
-    rclcpp::spin(glim);
-  }
-
   std::string dump_path = "/tmp/dump";
   glim->declare_parameter<std::string>("dump_path", dump_path);
   glim->get_parameter<std::string>("dump_path", dump_path);
+
+  for (const auto& bag_filename : bag_filenames) {
+    if (!read_bag(bag_filename)) {
+      auto_quit = true;
+      break;
+    }
+  }
+
+  if (!auto_quit) {
+    rclcpp::spin(glim);
+  }
 
   glim->wait(auto_quit);
   glim->save(dump_path);

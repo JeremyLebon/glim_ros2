@@ -22,7 +22,7 @@ RUN apt-get install --no-install-recommends -y \
     ros-${ROS_DISTRO}-image-transport-plugins ros-${ROS_DISTRO}-tf2-ros \
     python3-bloom python3-rosdep fakeroot debhelper dh-python
 
-COPY ppa /ppa
+COPY ppa /root/ros2_ws/src/ppa
 
 RUN /ppa/setup_ppa.sh
 RUN sed -i 's#https://koide3.github.io/ppa#file:///ppa#g' /etc/apt/sources.list.d/koide3_ppa.list
@@ -41,8 +41,6 @@ RUN apt-get install --no-install-recommends -y \
 RUN rosdep init && rosdep update
 
 COPY glim /root/glim
-
-COPY glim_ext /root/glim_ext
 
 WORKDIR /root/glim
 RUN bloom-generate rosdebian
